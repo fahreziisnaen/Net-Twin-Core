@@ -1,0 +1,68 @@
+# Configure via a .env file next to this one (see .env.example). JWT_SECRET is
+# required; compose refuses to start without it.
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: nettwin
+      MYSQL_USER: nettwin
+      MYSQL_PASSWORD: ${DB_PASSWORD:-nettwin}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-nettwin-root}
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 30s
+    # No `ports:` — only the app talks to the database.
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_USER: nettwin
+      DB_PASSWORD: ${DB_PASSWORD:-nettwin}
+      DB_NAME: nettwin
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in .env - generate one with openssl rand -hex 32}"
+      # First-boot admin password. Empty = a random one is generated and printed
+      # once in the logs (docker compose logs app).
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      # Behind a TLS-terminating reverse proxy set TRUST_PROXY=1 (see README).
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-}
+      # SSH Sync (optional): both must be set to strong random values to enable it.
+      CRED_KEY: ${CRED_KEY:-}
+      COLLECTOR_URL: http://collector:8000
+      COLLECTOR_TOKEN: ${COLLECTOR_TOKEN:-}
+    # Behind a reverse proxy on this host, publish on loopback only
+    # (APP_PORT=127.0.0.1:3000) so clients can't bypass the proxy.
+    ports:
+      - "${APP_PORT:-3000}:3000"
+
+  # SSH collector sidecar — the ONLY component that reaches devices. Read-only,
+  # internal network only (no published ports). Needs reachability to your
+  # device management IPs from wherever this host runs. Without COLLECTOR_TOKEN
+  # it rejects every request.
+  collector:
+    build: ./collector
+    restart: unless-stopped
+    environment:
+      COLLECTOR_TOKEN: ${COLLECTOR_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    # No `ports:` — reachable only from the app over the internal network.
+
+volumes:
+  db_data:

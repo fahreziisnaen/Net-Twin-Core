@@ -1,0 +1,6 @@
+{
+  "name": "NetTwin Core",
+  "description": "Digital Twin network control plane simulation, LPM path routing, and policy verification platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
