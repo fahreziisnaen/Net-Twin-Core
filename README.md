@@ -19,7 +19,7 @@ Aplikasi mandiri dengan autentikasi, database, dan parser konfigurasi statis mul
 - **Compliance Auditor** — audit reachability / isolasi (mis. segmentasi PCI-DSS) yang bisa dijalankan ulang kapan pun.
 - **Change Center** — draft perubahan policy dengan **what-if before/after otomatis** dan approval (admin).
 - **RBAC + login** — tiga role: `admin`, `operator`, `viewer`. Sesi JWT httpOnly, password bcrypt, rate-limit login.
-- **Persistence** — **MySQL** (via Docker) atau **file JSON** (mode dev tanpa DB), plus export/import snapshot.
+- **Persistence** — **MySQL** (via Docker) atau **file JSON** (mode dev tanpa DB), plus export/import snapshot, kembali ke data demo, dan **factory reset** (kosongkan twin; akun user, koneksi SSH, profil parser, dan pengaturan tetap).
 - **Dwibahasa (i18n)** — UI **Inggris (default)** & **Indonesia**, dapat diganti lewat pemilih **EN/ID** (tersimpan per-browser). Bahasa default aplikasi adalah Inggris.
 
 ## Menjalankan dengan Docker (disarankan)
@@ -81,7 +81,7 @@ Buka `http://localhost:3000`. Tanpa `DB_HOST`, penyimpanan memakai **file JSON**
 | Lihat topology / audit / changes & **simulasi path** | ✓ | ✓ | ✓ |
 | CRUD device / link / route / NAT / audit, **import config**, draft change request | — | ✓ | ✓ |
 | **Approve & apply** change request | — | — | ✓ |
-| Engine settings, reset, import snapshot | — | — | ✓ |
+| Engine settings, reset / factory reset, import snapshot | — | — | ✓ |
 | **Edit / tambah Parser Profile** (dan Live Test draft yang belum disimpan) | — | — | ✓ |
 | Live Test profile yang tersimpan | — | ✓ | ✓ |
 | Manajemen user | — | — | ✓ |

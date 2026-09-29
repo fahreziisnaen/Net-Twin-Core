@@ -13,6 +13,7 @@ import ParserProfilesTab from './components/ParserProfilesTab';
 import SettingsTab from './components/SettingsTab';
 import LoginView, { AuthUser } from './components/LoginView';
 import ErrorBoundary from './components/ErrorBoundary';
+import { useDialog } from './components/DialogProvider';
 import { canAccess, Action } from './rbac';
 import { useLang } from './i18n';
 import {
@@ -53,6 +54,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const { t, lang, setLang } = useLang();
+  const dialog = useDialog();
 
   const can = (action: Action) => !!currentUser && canAccess(currentUser.role, action);
 
@@ -74,7 +76,7 @@ export default function App() {
     try {
       res = await fetch(input, init);
     } catch {
-      alert(t('Cannot reach the server. Check your connection and try again.'));
+      await dialog.alert(t('Cannot reach the server. Check your connection and try again.'), { title: t('Connection problem'), tone: 'danger' });
       return null;
     }
     const data = await res.json().catch(() => ({}));
@@ -82,9 +84,12 @@ export default function App() {
     if (res.status === 401) return null;
     if (res.status === 403) {
       void refreshMe();
-      alert(data.error || t('Access denied: your role does not have permission for this action.'));
+      await dialog.alert(data.error || t('Access denied: your role does not have permission for this action.'), { title: t('Access denied'), tone: 'danger' });
     } else {
-      alert(data.error || t('Request failed (HTTP {status}).', { status: res.status }));
+      await dialog.alert(data.error || t('Request failed (HTTP {status}).', { status: res.status }), {
+        title: res.status === 409 ? t('Conflict') : t('Action failed'),
+        tone: 'danger',
+      });
     }
     // Someone else changed the device meanwhile: show them the current version.
     if (res.status === 409 && data.stale) await fetchTopology();
@@ -279,6 +284,14 @@ export default function App() {
   // (without the full-screen loader, so the Settings tab can show its message).
   const handleResetTopology = async (): Promise<boolean> => {
     if (!(await mutate('/api/twin/reset', { method: 'POST' }))) return false;
+    setActiveSimulationResult(null);
+    await refreshAll();
+    return true;
+  };
+
+  // Empty the twin entirely (the confirmation word is checked server-side too).
+  const handleFactoryReset = async (): Promise<boolean> => {
+    if (!(await mutate('/api/twin/factory-reset', jsonInit('POST', { confirm: 'RESET' })))) return false;
     setActiveSimulationResult(null);
     await refreshAll();
     return true;
@@ -573,6 +586,7 @@ export default function App() {
           {activeTab === 'settings' && (
             <SettingsTab
               onResetTopology={handleResetTopology}
+              onFactoryReset={handleFactoryReset}
               currentUser={currentUser}
             />
           )}

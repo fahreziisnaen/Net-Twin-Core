@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { NetworkNode, IpReservation } from '../types';
 import { enumerateSubnets, computeSubnetUsage, groupByVlan, SubnetInfo, IpUsage } from '../ipam';
 import { useLang } from '../i18n';
+import { useDialog } from './DialogProvider';
 import { Network, Search, Plus, Trash2, CheckCircle2, AlertCircle, Layers, Tag, Play, Server } from 'lucide-react';
 
 interface IpamTabProps {
@@ -12,6 +13,7 @@ interface IpamTabProps {
 
 export default function IpamTab({ nodes, canEdit, onSimulateFrom }: IpamTabProps) {
   const { t } = useLang();
+  const dialog = useDialog();
   const [reservations, setReservations] = useState<IpReservation[]>([]);
   const [selectedCidr, setSelectedCidr] = useState<string>('');
   const [groupMode, setGroupMode] = useState<'subnet' | 'vlan'>('subnet');
@@ -69,7 +71,9 @@ export default function IpamTab({ nodes, canEdit, onSimulateFrom }: IpamTabProps
 
   const handleRelease = async (ip: string) => {
     const r = reservations.find(x => x.ip === ip);
-    if (!r || !confirm(t('Release reservation for {ip}?', { ip }))) return;
+    if (!r) return;
+    const ok = await dialog.confirm(t('Release reservation for {ip}?', { ip }), { title: t('Release reservation'), tone: 'danger', confirmLabel: t('Release') });
+    if (!ok) return;
     try {
       const res = await fetch(`/api/twin/ipam/reservations/${r.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error((await res.json()).error || t('Failed to release'));

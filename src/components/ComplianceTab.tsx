@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ComplianceAudit, NetworkNode } from '../types';
+import { useDialog } from './DialogProvider';
 import { ShieldCheck, ShieldAlert, Play, Plus, RefreshCw, Layers, CheckCircle2, XCircle, Trash2 } from 'lucide-react';
 
 interface ComplianceTabProps {
@@ -12,6 +13,7 @@ interface ComplianceTabProps {
 }
 
 export default function ComplianceTab({ audits, nodes, canEdit, onRunAudits, onAddAudit, onDeleteAudit }: ComplianceTabProps) {
+  const dialog = useDialog();
   const [running, setRunning] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
@@ -294,8 +296,9 @@ export default function ComplianceTab({ audits, nodes, canEdit, onRunAudits, onA
                 </div>
                 {canEdit && (
                   <button
-                    onClick={() => {
-                      if (confirm(`Delete audit "${audit.name}"?`)) void onDeleteAudit(audit.id);
+                    onClick={async () => {
+                      const ok = await dialog.confirm(`Delete audit "${audit.name}"?`, { title: 'Delete audit', tone: 'danger', confirmLabel: 'Delete' });
+                      if (ok) void onDeleteAudit(audit.id);
                     }}
                     className="text-rose-400 hover:text-rose-600 p-1.5 hover:bg-rose-50 rounded transition shrink-0"
                     title="Delete audit"

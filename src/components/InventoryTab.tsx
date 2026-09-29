@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { NetworkNode, NetworkLink, VRF, Route, Interface, NodeType, FirewallRule } from '../types';
 import { useLang } from '../i18n';
 import { uniqueNodeId } from '../nodeUtils';
+import { useDialog } from './DialogProvider';
 import { Plus, Trash2, Search, ArrowRightLeft, Database, HardDrive, CheckCircle2, Sliders, AlertCircle, Cable, Shield, ChevronUp, ChevronDown, Pencil, X, Check } from 'lucide-react';
 
 const EMPTY_RULE_DRAFT = {
@@ -21,6 +22,7 @@ const EMPTY_RULE_DRAFT = {
 // delete, and reorder rules (order defines matching priority).
 function FirewallRulesPanel({ node, canEdit, onUpdateNode }: { node: NetworkNode; canEdit: boolean; onUpdateNode: (n: NetworkNode) => Promise<boolean> }) {
   const { t } = useLang();
+  const dialog = useDialog();
   const rules = node.firewallRules || [];
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -38,8 +40,9 @@ function FirewallRulesPanel({ node, canEdit, onUpdateNode }: { node: NetworkNode
     commitRules(next);
   };
 
-  const deleteRule = (id: string) => {
-    if (!confirm(t('Delete this rule from the policy set?'))) return;
+  const deleteRule = async (id: string) => {
+    const ok = await dialog.confirm(t('Delete this rule from the policy set?'), { title: t('Delete rule'), tone: 'danger', confirmLabel: t('Delete') });
+    if (!ok) return;
     commitRules(rules.filter(r => r.id !== id));
   };
 
@@ -274,6 +277,7 @@ interface InventoryTabProps {
 
 export default function InventoryTab({ nodes, links, canEdit, focusNodeId, onUpdateNode, onCreateNode, onDeleteNode, onCreateLink, onDeleteLink }: InventoryTabProps) {
   const { t } = useLang();
+  const dialog = useDialog();
   const [selectedNodeId, setSelectedNodeId] = useState<string>(
     (focusNodeId && nodes.some(n => n.id === focusNodeId) ? focusNodeId : nodes[0]?.id) || ''
   );
@@ -419,7 +423,7 @@ export default function InventoryTab({ nodes, links, canEdit, focusNodeId, onUpd
     e.preventDefault();
     if (!selectedNode || !activeVrf || !newIntfName.trim() || !newIntfIp.trim()) return;
     if (activeVrf.interfaces.some(i => i.name === newIntfName.trim())) {
-      alert(t('Interface "{name}" already exists in this VRF.', { name: newIntfName.trim() }));
+      await dialog.alert(t('Interface "{name}" already exists in this VRF.', { name: newIntfName.trim() }), { title: t('Duplicate interface') });
       return;
     }
 
@@ -464,7 +468,7 @@ export default function InventoryTab({ nodes, links, canEdit, focusNodeId, onUpd
       (l.destNodeId === selectedNode.id && l.destInterface === intfName)
     );
     if (usedByLink) {
-      alert(t('This interface still has a cable (link) attached. Remove the link first.'));
+      void dialog.alert(t('This interface still has a cable (link) attached. Remove the link first.'), { title: t('Interface in use') });
       return;
     }
     const intf = activeVrf.interfaces.find(i => i.name === intfName);
@@ -486,7 +490,7 @@ export default function InventoryTab({ nodes, links, canEdit, focusNodeId, onUpd
     const name = newVrfName.trim();
     if (!selectedNode || !name) return;
     if (selectedNode.vrfs.some(v => v.name === name)) {
-      alert(t('VRF "{name}" already exists on this device.', { name }));
+      await dialog.alert(t('VRF "{name}" already exists on this device.', { name }), { title: t('Duplicate VRF') });
       return;
     }
     const updatedNode = {
@@ -738,10 +742,12 @@ export default function InventoryTab({ nodes, links, canEdit, focusNodeId, onUpd
               {canEdit && (
                 <button
                   type="button"
-                  onClick={() => {
-                    if (confirm(t('Are you sure you want to remove device "{name}" from the digital twin topology?', { name: selectedNode.name }))) {
-                      void onDeleteNode(selectedNode.id);
-                    }
+                  onClick={async () => {
+                    const ok = await dialog.confirm(
+                      t('Are you sure you want to remove device "{name}" from the digital twin topology?', { name: selectedNode.name }),
+                      { title: t('Delete Device'), tone: 'danger', confirmLabel: t('Delete') },
+                    );
+                    if (ok) void onDeleteNode(selectedNode.id);
                   }}
                   className="bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition duration-150"
                   title={t('Remove Device from Twin')}

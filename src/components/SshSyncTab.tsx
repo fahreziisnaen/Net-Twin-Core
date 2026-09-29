@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { NetworkNode, NetworkLink, DeviceConnection, Interface, Route, FirewallRule } from '../types';
 import { useLang } from '../i18n';
 import { slugify, uniqueNodeId, mergeIntoNode, buildNode } from '../nodeUtils';
+import { useDialog } from './DialogProvider';
 import { Server, Plus, Trash2, RefreshCw, AlertCircle, CheckCircle2, Radio, Pencil, X, Lock, Cable, Network, ArrowRightLeft, Shield, Play } from 'lucide-react';
 
 interface SshSyncTabProps {
@@ -42,6 +43,7 @@ async function errorOf(res: Response, fallback: string): Promise<string> {
 
 export default function SshSyncTab({ nodes, links, isAdmin, onUpdateNode, onCreateNode, onApplied }: SshSyncTabProps) {
   const { t } = useLang();
+  const dialog = useDialog();
   const [meta, setMeta] = useState<Meta | null>(null);
   const [conns, setConns] = useState<DeviceConnection[]>([]);
   const [form, setForm] = useState({ ...BLANK });
@@ -92,7 +94,8 @@ export default function SshSyncTab({ nodes, links, isAdmin, onUpdateNode, onCrea
   };
 
   const remove = async (c: DeviceConnection) => {
-    if (!confirm(t('Delete connection "{name}"?', { name: c.name }))) return;
+    const ok = await dialog.confirm(t('Delete connection "{name}"?', { name: c.name }), { title: t('Delete connection'), tone: 'danger', confirmLabel: t('Delete') });
+    if (!ok) return;
     try {
       const res = await fetch(`/api/twin/ssh/connections/${c.id}`, { method: 'DELETE' });
       if (!res.ok) return flash('error', await errorOf(res, t('Failed to delete')));
@@ -111,7 +114,10 @@ export default function SshSyncTab({ nodes, links, isAdmin, onUpdateNode, onCrea
       const data = await res.json().catch(() => ({}));
       if (res.status === 409 && data.hostKeyMismatch) {
         // Host key changed since it was pinned — possible MITM or the device was replaced.
-        const okRepin = confirm(t('⚠ HOST KEY MISMATCH for {name}. The device SSH key changed since it was pinned — this could mean the device was replaced, or a man-in-the-middle. Only trust the new key if you know the device changed.\n\nTrust the new key and re-collect?', { name: c.name }));
+        const okRepin = await dialog.confirm(
+          t('⚠ HOST KEY MISMATCH for {name}. The device SSH key changed since it was pinned — this could mean the device was replaced, or a man-in-the-middle. Only trust the new key if you know the device changed.\n\nTrust the new key and re-collect?', { name: c.name }),
+          { title: t('Host key mismatch'), tone: 'danger', confirmLabel: t('Trust new key'), cancelLabel: t('Abort') },
+        );
         if (okRepin) return runCollect(c, true);
         throw new Error(t('Host key mismatch — collection aborted.'));
       }

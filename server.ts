@@ -128,9 +128,12 @@ function saveState() {
 }
 
 // Every node carries a revision for optimistic concurrency (see PUT
-// /api/twin/nodes/:id). After a reset or import the twin is replaced wholesale,
-// so revisions are raised past any value a client may still hold — a stale
-// browser tab then gets a conflict instead of overwriting the new state.
+// /api/twin/nodes/:id). New revisions are taken from the clock (never below
+// the previous one), so they keep increasing across resets, factory resets
+// and restarts: a stale browser tab never holds a revision that happens to
+// match a node recreated later under the same id, and gets a conflict instead
+// of overwriting it.
+const nextRev = (previous = 0) => Math.max(previous + 1, Date.now());
 const maxRev = () => nodes.reduce((m, n) => Math.max(m, n.rev ?? 0), 0);
 function withRevisions(list: NetworkNode[], floor: number): NetworkNode[] {
   return list.map(n => ({ ...n, rev: Math.max(n.rev ?? 0, floor) }));
@@ -412,7 +415,7 @@ app.post('/api/twin/nodes', requireAction('mutate-twin'), (req, res) => {
   if (nodes.some(n => sameId(n.id, newNode.id))) {
     return res.status(409).json({ error: `A device with id "${newNode.id}" already exists` });
   }
-  newNode.rev = 1;
+  newNode.rev = nextRev(maxRev());
   nodes.push(newNode);
   saveState();
   res.json({ success: true, node: newNode, nodes });
@@ -437,7 +440,7 @@ app.put('/api/twin/nodes/:id', requireAction('mutate-twin'), (req, res) => {
     });
   }
   // The id in the URL is authoritative; a body id can't rename/duplicate a node.
-  nodes[idx] = normalizeNode({ ...nodes[idx], ...req.body, id: nodeId, rev: currentRev + 1 });
+  nodes[idx] = normalizeNode({ ...nodes[idx], ...req.body, id: nodeId, rev: nextRev(currentRev) });
   saveState();
   res.json({ success: true, node: nodes[idx] });
 });
@@ -580,7 +583,7 @@ app.post('/api/twin/changes/:id/apply', requireAction('apply-change'), (req, res
   nodes[fwNodeIdx] = {
     ...nodes[fwNodeIdx],
     firewallRules: [...cr.proposedRules, ...(nodes[fwNodeIdx].firewallRules || [])],
-    rev: (nodes[fwNodeIdx].rev ?? 0) + 1,
+    rev: nextRev(nodes[fwNodeIdx].rev ?? 0),
   };
 
   cr.status = 'applied';
@@ -777,13 +780,32 @@ app.put('/api/twin/settings', requireAction('manage-settings'), (req, res) => {
 
 // 14. Reset the whole twin back to the certified seed state
 app.post('/api/twin/reset', requireAction('manage-settings'), (req, res) => {
-  nodes = withRevisions(getSeedNodes(), maxRev() + 1);
+  nodes = withRevisions(getSeedNodes(), nextRev(maxRev()));
   links = getSeedLinks();
   audits = getSeedAudits();
   changeRequests = getSeedChangeRequests();
   settings = { ...DEFAULT_SETTINGS };
   ipReservations = [];
   saveState();
+  res.json({ success: true, nodes, links, audits, changeRequests, settings, ipReservations });
+});
+
+// 14.1 Factory reset: empty the twin — devices (with their routes, rules and
+// NAT), links, audits, change requests and IPAM reservations. User accounts,
+// SSH connections, parser profiles and engine settings are kept. The caller
+// must send the confirmation word, so a stray request can't wipe the twin.
+const FACTORY_RESET_WORD = 'RESET';
+app.post('/api/twin/factory-reset', requireAction('manage-settings'), (req: AuthedRequest, res) => {
+  if (req.body?.confirm !== FACTORY_RESET_WORD) {
+    return res.status(400).json({ error: `Send {"confirm": "${FACTORY_RESET_WORD}"} to confirm a factory reset.` });
+  }
+  nodes = [];
+  links = [];
+  audits = [];
+  changeRequests = [];
+  ipReservations = [];
+  saveState();
+  console.log(`[AUDIT] Factory reset by "${req.user?.username}"`);
   res.json({ success: true, nodes, links, audits, changeRequests, settings, ipReservations });
 });
 
@@ -817,7 +839,7 @@ app.post('/api/twin/import', requireAction('manage-settings'), (req, res) => {
   assertUniqueIds(snapshot.audits, 'audits');
   assertUniqueIds(snapshot.changeRequests, 'changeRequests');
   assertUniqueIds(snapshot.ipReservations, 'ipReservations');
-  snapshot.nodes = withRevisions(snapshot.nodes, maxRev() + 1);
+  snapshot.nodes = withRevisions(snapshot.nodes, nextRev(maxRev()));
   ({ nodes, links, audits, changeRequests, ipReservations, settings } = snapshot);
   saveState();
   res.json({ success: true, nodes, links, audits, changeRequests, settings, ipReservations });

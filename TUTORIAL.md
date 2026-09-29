@@ -280,7 +280,8 @@ Menu **Simulator Settings** (kebanyakan admin-only).
 
 - **Simulation Engine Constraints** — `Maximum Path Hop Limit (TTL)` (batas hop, cegah loop tak hingga) dan `Default-Deny Policy Action` (implicit deny on/off). Tersimpan di server & dipakai semua simulasi, audit, dan what-if.
 - **Twin Snapshot** — **Export** seluruh state ke file JSON (backup/versioning/berbagi), atau **Import** snapshot. State juga tersimpan otomatis di database/`data/` tiap perubahan.
-- **Twin Synchronization Center** — **Revert to Certified State**: kembalikan seluruh topologi/rule/NAT/audit/change ke kondisi awal (seed).
+- **Twin Synchronization Center** — **Revert to Certified State**: kembalikan seluruh topologi/rule/NAT/audit/change ke kondisi awal (data demo/seed).
+- **Factory Reset (Kosongkan Twin)** — hapus permanen **semua data twin** (device beserta route/rule/NAT, kabel, audit, change request, reservasi IPAM) supaya Anda mulai memodelkan jaringan sendiri dari nol tanpa data demo. Akun user, koneksi SSH, profil parser, dan pengaturan engine **tetap**. Konfirmasinya dengan mengetik `RESET`; tidak bisa dibatalkan, jadi export snapshot dulu bila perlu. Twin tetap kosong setelah restart.
 - **User Management** — tambah user (username, password ≥6, role), ubah role, reset password, hapus user. Ada proteksi: tidak bisa menghapus/menurunkan **admin terakhir** atau menghapus akun sendiri.
 
 ---
@@ -352,4 +353,4 @@ Sebuah profile adalah objek JSON:
 | SSH Sync: "CRED_KEY is not configured" | `CRED_KEY` belum di-set / terlalu pendek / masih nilai contoh. Bila `CRED_KEY` diganti, password perangkat yang tersimpan tidak bisa dibuka lagi — isi ulang di menu SSH Sync. |
 | Perubahan hilang setelah restart (mode dev) | Pastikan folder `data/` bisa ditulis; state tersimpan di `data/*.json`. Dengan Docker, data ada di volume MySQL `db_data`. File JSON yang rusak dipindah ke `*.corrupt-<waktu>` (tidak ditimpa) agar bisa dipulihkan manual. |
 
-Butuh mengembalikan semuanya ke kondisi awal? **Settings → Revert to Certified State** (twin) dan **Parser Profiles → Reset profile bawaan** (parser).
+Butuh mengembalikan semuanya ke kondisi awal? **Settings → Revert to Certified State** (twin kembali ke data demo) dan **Parser Profiles → Reset profile bawaan** (parser). Ingin twin benar-benar kosong? **Settings → Factory Reset (Kosongkan Twin)**.

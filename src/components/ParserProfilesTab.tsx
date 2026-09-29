@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Role } from '../rbac';
 import { useLang } from '../i18n';
+import { useDialog } from './DialogProvider';
 import { FileCode2, Play, Save, Plus, Trash2, RefreshCw, AlertCircle, CheckCircle2, FlaskConical, Lock } from 'lucide-react';
 
 interface ParserProfilesTabProps {
@@ -21,6 +22,7 @@ const BLANK_TEMPLATE = {
 
 export default function ParserProfilesTab({ currentUser }: ParserProfilesTabProps) {
   const { t } = useLang();
+  const dialog = useDialog();
   const isAdmin = currentUser.role === 'admin';
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [selectedId, setSelectedId] = useState<string>('');
@@ -103,7 +105,9 @@ export default function ParserProfilesTab({ currentUser }: ParserProfilesTabProp
   };
 
   const handleDelete = async () => {
-    if (!selectedId || !confirm(t('Delete profile "{id}"?', { id: selectedId }))) return;
+    if (!selectedId) return;
+    const ok = await dialog.confirm(t('Delete profile "{id}"?', { id: selectedId }), { title: t('Delete profile'), tone: 'danger', confirmLabel: t('Delete') });
+    if (!ok) return;
     let res: Response;
     try {
       res = await fetch(`/api/twin/parser-profiles/${encodeURIComponent(selectedId)}`, { method: 'DELETE' });
@@ -117,7 +121,11 @@ export default function ParserProfilesTab({ currentUser }: ParserProfilesTabProp
   };
 
   const handleReset = async () => {
-    if (!confirm(t('Restore all built-in profiles (Cisco/FortiGate/Junos/PAN-OS) to their original definitions? Custom profiles are unaffected.'))) return;
+    const ok = await dialog.confirm(
+      t('Restore all built-in profiles (Cisco/FortiGate/Junos/PAN-OS) to their original definitions? Custom profiles are unaffected.'),
+      { title: t('Reset built-in profiles'), tone: 'danger', confirmLabel: t('Reset') },
+    );
+    if (!ok) return;
     const res = await fetch('/api/twin/parser-profiles/reset', { method: 'POST' }).catch(() => null);
     if (!res?.ok) return flash('error', t('Reset failed'));
     flash('ok', t('Built-in profiles restored to defaults.'));

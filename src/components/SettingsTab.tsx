@@ -2,7 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { SimulationSettings } from '../types';
 import { Role, ROLES } from '../rbac';
 import { useLang } from '../i18n';
-import { Sliders, RefreshCw, Save, Download, Upload, CheckCircle2, AlertCircle, Users, Plus, Trash2, KeyRound } from 'lucide-react';
+import { useDialog } from './DialogProvider';
+import { Sliders, RefreshCw, Save, Download, Upload, CheckCircle2, AlertCircle, Users, Plus, Trash2, KeyRound, Eraser } from 'lucide-react';
 
 interface ManagedUser {
   id: number;
@@ -12,15 +13,20 @@ interface ManagedUser {
 
 interface SettingsTabProps {
   onResetTopology: () => Promise<boolean>;
+  onFactoryReset: () => Promise<boolean>;
   currentUser: { id: number; username: string; role: Role };
 }
+
+// Word the admin must type to enable the factory reset (the API requires it too).
+const FACTORY_RESET_WORD = 'RESET';
 
 // Parse a JSON response body, tolerating empty/non-JSON bodies (e.g. a proxy's
 // HTML error page) so the server's error message or a sane fallback is shown.
 const bodyOf = (res: Response): Promise<any> => res.json().catch(() => ({}));
 
-export default function SettingsTab({ onResetTopology, currentUser }: SettingsTabProps) {
+export default function SettingsTab({ onResetTopology, onFactoryReset, currentUser }: SettingsTabProps) {
   const { t } = useLang();
+  const dialog = useDialog();
   const isAdmin = currentUser.role === 'admin';
   const [maxHops, setMaxHops] = useState('10');
   const [implicitDeny, setImplicitDeny] = useState(true);
@@ -84,12 +90,28 @@ export default function SettingsTab({ onResetTopology, currentUser }: SettingsTa
   };
 
   const handleReset = async () => {
-    if (!confirm(t('Reset the entire topology, rules, NAT, audits, and change requests back to the initial (seed) state? Your changes will be lost.'))) {
-      return;
-    }
+    const ok = await dialog.confirm(
+      t('Reset the entire topology, rules, NAT, audits, and change requests back to the initial (seed) state? Your changes will be lost.'),
+      { title: t('Revert to Certified State'), tone: 'danger', confirmLabel: t('Revert') },
+    );
+    if (!ok) return;
     setResetting(true);
     try {
       if (await onResetTopology()) flash('ok', t('Digital twin successfully reset to the certified seed state.'));
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  const handleFactoryReset = async () => {
+    const ok = await dialog.confirm(
+      t('Permanently delete ALL twin data: devices, cables, routes, firewall rules, NAT, audits, change requests and IPAM reservations. User accounts, SSH connections, parser profiles and engine settings are kept. This cannot be undone — export a snapshot first if you may need the data.'),
+      { title: t('Factory Reset'), tone: 'danger', confirmLabel: t('Delete everything'), requireText: FACTORY_RESET_WORD },
+    );
+    if (!ok) return;
+    setResetting(true);
+    try {
+      if (await onFactoryReset()) flash('ok', t('Factory reset complete. The digital twin is now empty.'));
     } finally {
       setResetting(false);
     }
@@ -138,7 +160,12 @@ export default function SettingsTab({ onResetTopology, currentUser }: SettingsTa
   };
 
   const handleResetPassword = async (user: ManagedUser) => {
-    const password = prompt(t('New password for "{name}" (min. 6 chars):', { name: user.username }));
+    const password = await dialog.prompt(t('New password for "{name}" (min. 6 chars):', { name: user.username }), {
+      title: t('Change password'),
+      inputType: 'password',
+      minLength: 6,
+      confirmLabel: t('Save'),
+    });
     if (!password) return;
     try {
       const res = await fetch(`/api/users/${user.id}`, {
@@ -155,7 +182,8 @@ export default function SettingsTab({ onResetTopology, currentUser }: SettingsTa
   };
 
   const handleDeleteUser = async (user: ManagedUser) => {
-    if (!confirm(t('Delete user "{name}"?', { name: user.username }))) return;
+    const ok = await dialog.confirm(t('Delete user "{name}"?', { name: user.username }), { title: t('Delete user'), tone: 'danger', confirmLabel: t('Delete') });
+    if (!ok) return;
     try {
       const res = await fetch(`/api/users/${user.id}`, { method: 'DELETE' });
       const data = await bodyOf(res);
@@ -305,6 +333,20 @@ export default function SettingsTab({ onResetTopology, currentUser }: SettingsTa
               className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-semibold rounded-lg transition shadow-sm flex items-center justify-center gap-2"
             >
               <RefreshCw size={14} className={resetting ? 'animate-spin' : ''} /> {t('Revert to Certified State')}
+            </button>
+          </div>
+
+          <div className="pt-4 border-t border-slate-100 space-y-2">
+            <p className="text-slate-500 leading-relaxed text-[11px]">
+              {t('Factory reset empties the twin completely (no demo data), so you can model your own network from scratch.')}
+            </p>
+            <button
+              onClick={handleFactoryReset}
+              disabled={resetting || !isAdmin}
+              title={isAdmin ? '' : t('Only admins can reset')}
+              className="w-full py-2.5 bg-white hover:bg-rose-50 border border-rose-300 text-rose-700 disabled:border-slate-200 disabled:text-slate-400 disabled:bg-white disabled:cursor-not-allowed font-semibold rounded-lg transition flex items-center justify-center gap-2"
+            >
+              <Eraser size={14} /> {t('Factory Reset (Empty Twin)')}
             </button>
           </div>
         </div>

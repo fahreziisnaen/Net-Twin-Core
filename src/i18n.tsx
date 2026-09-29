@@ -298,6 +298,37 @@ const ID: Record<string, string> = {
   'Configuration merged into device "{name}".': 'Konfigurasi di-merge ke device "{name}".',
   'Importing configurations requires the operator or admin role.': 'Impor konfigurasi memerlukan role operator atau admin.',
   'SSH Sync touches real devices and is limited to admins. Ask an admin to collect from a device.': 'SSH Sync menyentuh perangkat nyata dan hanya untuk admin. Minta admin untuk melakukan collect dari device.',
+
+  // --- in-app dialogs ---
+  'OK': 'OK',
+  'Confirm': 'Konfirmasi',
+  'Notice': 'Informasi',
+  'Please confirm': 'Mohon konfirmasi',
+  'Input required': 'Isian diperlukan',
+  'Type {text} to confirm': 'Ketik {text} untuk konfirmasi',
+  'At least {n} characters.': 'Minimal {n} karakter.',
+  'Connection problem': 'Masalah koneksi',
+  'Access denied': 'Akses ditolak',
+  'Conflict': 'Konflik',
+  'Action failed': 'Aksi gagal',
+  'Release': 'Lepas',
+  'Duplicate interface': 'Interface duplikat',
+  'Interface in use': 'Interface sedang dipakai',
+  'Duplicate VRF': 'VRF duplikat',
+  'Delete profile': 'Hapus profil',
+  'Delete connection': 'Hapus koneksi',
+  'Host key mismatch': 'Host key tidak cocok',
+  'Trust new key': 'Percayai key baru',
+  'Abort': 'Batalkan',
+  'Revert': 'Kembalikan',
+
+  // --- factory reset ---
+  'Factory Reset': 'Factory Reset',
+  'Factory Reset (Empty Twin)': 'Factory Reset (Kosongkan Twin)',
+  'Delete everything': 'Hapus semuanya',
+  'Factory reset empties the twin completely (no demo data), so you can model your own network from scratch.': 'Factory reset mengosongkan twin sepenuhnya (tanpa data demo), sehingga Anda bisa memodelkan jaringan sendiri dari nol.',
+  'Permanently delete ALL twin data: devices, cables, routes, firewall rules, NAT, audits, change requests and IPAM reservations. User accounts, SSH connections, parser profiles and engine settings are kept. This cannot be undone — export a snapshot first if you may need the data.': 'Hapus permanen SEMUA data twin: device, kabel, route, firewall rule, NAT, audit, change request, dan reservasi IPAM. Akun user, koneksi SSH, profil parser, dan pengaturan engine tetap disimpan. Tindakan ini tidak bisa dibatalkan — export snapshot dulu bila datanya mungkin masih diperlukan.',
+  'Factory reset complete. The digital twin is now empty.': 'Factory reset selesai. Digital twin sekarang kosong.',
 };
 
 // Pure translation function (also used directly in tests). English is the
