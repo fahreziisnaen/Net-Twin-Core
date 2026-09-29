@@ -1,5 +1,5 @@
 import { NetworkNode, Interface, Route, FirewallRule, VRF } from './types';
-import { parseCidr } from './engine';
+import { parseCidr, matchCidr } from './engine';
 
 type NatMapping = NonNullable<NetworkNode['natMappings']>[number];
 
@@ -38,7 +38,7 @@ const natSignature = (n: Pick<NatMapping, 'type' | 'insideLocal' | 'insideGlobal
 // interface and subnet, however the prefix is written: the twin records the
 // interface address ("10.1.1.1/24") where a device RIB shows the network
 // ("10.1.1.0/24").
-function sameRoute(a: Route, b: Route): boolean {
+export function sameRoute(a: Route, b: Route): boolean {
   if (a.protocol === 'Connected' && b.protocol === 'Connected') {
     if (a.nextHop !== b.nextHop) return false;
     const x = parseCidr(a.destination);
@@ -49,7 +49,11 @@ function sameRoute(a: Route, b: Route): boolean {
 }
 
 // Routes a device learns at runtime; a fresh routing table supersedes them.
-const isLearned = (r: Route) => r.origin === 'rib' || r.protocol === 'OSPF' || r.protocol === 'BGP';
+export const isLearned = (r: Route) => r.origin === 'rib' || r.protocol === 'OSPF' || r.protocol === 'BGP';
+
+// A firewall's VRFs are the security zones of one routing table: its live
+// table covers every zone at once, so all of them count as read.
+export const ribCoversAllVrfs = (node: NetworkNode, ribVrfs: string[]) => node.type === 'firewall' && ribVrfs.length > 0;
 
 export interface IncomingConfig {
   interfaces: (Interface & { vrf?: string })[];
@@ -69,12 +73,17 @@ export interface IncomingConfig {
 // sync read from the RIB) are replaced rather than accumulated, so a route the
 // device withdrew disappears from the twin. Static routes the user modelled
 // stay, as do all routes in VRFs whose table wasn't read.
+//
+// On a firewall the table is read as a whole and each route is filed under the
+// zone of its egress interface (by interface name, or by the connected subnet
+// holding its next hop) — the device's table has no notion of zones.
 export function mergeIntoNode(existing: NetworkNode, incoming: IncomingConfig, opts: { ribVrfs?: string[] } = {}): NetworkNode {
   const ribVrfs = new Set(opts.ribVrfs || []);
+  const zoned = ribCoversAllVrfs(existing, [...ribVrfs]);
   const vrfs: VRF[] = existing.vrfs.map(v => ({
     ...v,
     interfaces: [...v.interfaces],
-    routes: ribVrfs.has(v.name) ? v.routes.filter(r => !isLearned(r)) : [...v.routes],
+    routes: zoned || ribVrfs.has(v.name) ? v.routes.filter(r => !isLearned(r)) : [...v.routes],
   }));
   const ensureVrf = (name: string): VRF => {
     const key = name || 'default';
@@ -100,12 +109,20 @@ export function mergeIntoNode(existing: NetworkNode, incoming: IncomingConfig, o
     }
   }
 
+  const egressZone = (route: Route): string | undefined => {
+    const byName = vrfs.find(v => v.interfaces.some(i => i.name === route.nextHop));
+    if (byName) return byName.name;
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(route.nextHop)) return undefined;
+    return vrfs.find(v => v.interfaces.some(i => i.ip.includes('/') && matchCidr(route.nextHop, i.ip)))?.name;
+  };
+
   for (const raw of incoming.routes) {
     const route = stripUiFields(raw);
-    const vrf = ensureVrf(route.vrf || 'default');
-    if (!vrf.routes.some(r => sameRoute(r, route))) {
-      vrf.routes.push({ ...route, id: newId('imp_r'), vrf: vrf.name });
-    }
+    const vrf = ensureVrf((zoned && egressZone(route)) || route.vrf || 'default');
+    // A zone-filed route may already be modelled under another zone (seed
+    // topologies often repeat e.g. the default route per zone), so check them all.
+    const known = zoned ? vrfs.some(v => v.routes.some(r => sameRoute(r, route))) : vrf.routes.some(r => sameRoute(r, route));
+    if (!known) vrf.routes.push({ ...route, id: newId('imp_r'), vrf: vrf.name });
   }
 
   const existingRules = existing.firewallRules || [];
@@ -129,9 +146,9 @@ export function mergeIntoNode(existing: NetworkNode, incoming: IncomingConfig, o
 }
 
 // Build a brand-new device from parsed/collected data.
-export function buildNode(id: string, name: string, type: NetworkNode['type'], incoming: IncomingConfig): NetworkNode {
+export function buildNode(id: string, name: string, type: NetworkNode['type'], incoming: IncomingConfig, opts: { ribVrfs?: string[] } = {}): NetworkNode {
   const shell: NetworkNode = { id, name, type, status: 'online', vrfs: [], firewallRules: [], natMappings: [] };
-  const node = mergeIntoNode(shell, incoming);
+  const node = mergeIntoNode(shell, incoming, opts);
   if (!node.vrfs.length) node.vrfs = [{ name: 'default', description: 'default', interfaces: [], routes: [] }];
   return node;
 }

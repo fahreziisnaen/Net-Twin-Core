@@ -143,8 +143,11 @@ function resolveEgress(node: NetworkNode, selection: RouteSelection): EgressReso
     return null;
   }
 
+  // A static can point straight at an interface (e.g. a tunnel); otherwise the
+  // next-hop IP must sit in a connected subnet.
   for (const scope of scopes) {
-    const it = scope.interfaces.find(i => matchCidr(selection.route.nextHop, i.ip));
+    const it = scope.interfaces.find(i => i.name === selection.route.nextHop)
+      || scope.interfaces.find(i => matchCidr(selection.route.nextHop, i.ip));
     if (it) return { intf: it, intfName: it.name, zone: scope.name };
   }
   return null;

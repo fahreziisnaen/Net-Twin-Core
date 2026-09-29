@@ -147,7 +147,7 @@ export default function SshSyncTab({ nodes, links, isAdmin, onUpdateNode, onCrea
         if (!(await onUpdateNode(node))) return;
       } else {
         const name = data.hostname || conn.name;
-        node = buildNode(uniqueNodeId(name, nodes), name, data.firewallRules.length ? 'firewall' : 'router', incoming);
+        node = buildNode(uniqueNodeId(name, nodes), name, data.firewallRules.length ? 'firewall' : 'router', incoming, { ribVrfs: data.ribVrfs });
         if (!(await onCreateNode(node))) return;
         // Link the connection to the device it created, so the next collection
         // updates it instead of creating another copy.

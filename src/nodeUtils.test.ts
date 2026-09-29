@@ -1,7 +1,8 @@
 import { describe, test, expect } from 'vitest';
 import { uniqueNodeId, mergeIntoNode, buildNode, IncomingConfig } from './nodeUtils';
-import { getSeedNodes } from './seedData';
-import { NetworkNode, Route } from './types';
+import { getSeedNodes, getSeedLinks } from './seedData';
+import { NetworkNode, Route, PathQuery } from './types';
+import { executeSimulation } from './engine';
 
 const empty: IncomingConfig = { interfaces: [], routes: [], firewallRules: [], natMappings: [] };
 
@@ -112,6 +113,75 @@ describe('mergeIntoNode with a live routing table', () => {
   test('without a routing table (config import) nothing is removed', () => {
     const merged = mergeIntoNode(router(), fresh);
     expect(merged.vrfs[0].routes.some(r => r.destination === '10.60.0.0/16')).toBe(true);
+  });
+});
+
+describe('mergeIntoNode on a firewall (VRFs are security zones)', () => {
+  const seedFw = () => getSeedNodes().find(n => n.id === 'edge-fw01')!;
+  // The seed SRX's own routing table, as `show route` reports it: one table.
+  const rib = (withCorporate = true): Route[] => [
+    { destination: '198.51.100.0/29', nextHop: 'ge-0/0/0', protocol: 'Connected' },
+    { destination: '10.100.1.0/30', nextHop: 'ge-0/0/1', protocol: 'Connected' },
+    { destination: '10.200.1.0/30', nextHop: 'ge-0/0/2', protocol: 'Connected' },
+    { destination: '192.168.50.0/24', nextHop: 'ge-0/0/3', protocol: 'Connected' },
+    { destination: '10.100.0.0/16', nextHop: '10.100.1.1', protocol: 'OSPF' },
+    ...(withCorporate ? [{ destination: '10.200.0.0/16', nextHop: '10.200.1.1', protocol: 'OSPF' as const }] : []),
+    { destination: '0.0.0.0/0', nextHop: '198.51.100.1', protocol: 'Static' },
+  ].map((r, i) => ({ id: `r${i}`, metric: 0, vrf: 'default', origin: 'rib' as const, ...r }) as Route);
+  const syncFw = (withCorporate = true) => mergeIntoNode(seedFw(), { ...empty, routes: rib(withCorporate) }, { ribVrfs: ['default'] });
+  const allRoutes = (n: NetworkNode) => n.vrfs.flatMap(v => v.routes.map(r => ({ ...r, zone: v.name })));
+
+  test('each learned route lands in the zone that owns its egress interface, once', () => {
+    const routes = allRoutes(syncFw());
+    expect(routes.filter(r => r.destination === '10.100.0.0/16').map(r => r.zone)).toEqual(['PRODUCTION']);
+    expect(routes.filter(r => r.destination === '10.200.0.0/16').map(r => r.zone)).toEqual(['CORPORATE']);
+  });
+
+  test('no zone gains duplicate connected routes and no VRF is added', () => {
+    const before = seedFw();
+    const after = syncFw();
+    expect(after.vrfs.map(v => v.name)).toEqual(before.vrfs.map(v => v.name));
+    for (const v of after.vrfs) {
+      expect(v.routes.filter(r => r.protocol === 'Connected').length)
+        .toBe(before.vrfs.find(b => b.name === v.name)!.routes.filter(r => r.protocol === 'Connected').length);
+    }
+  });
+
+  test('a route the firewall withdrew disappears from every zone', () => {
+    expect(allRoutes(syncFw(false)).some(r => r.destination === '10.200.0.0/16')).toBe(false);
+  });
+
+  test('syncing a routing table that matches the model changes no simulation outcome', () => {
+    const nodes = getSeedNodes();
+    const links = getSeedLinks();
+    const synced = nodes.map(n => (n.id === 'edge-fw01' ? syncFw() : n));
+    const flows: PathQuery[] = [
+      { sourceNodeId: 'corp-pc-01', sourceVrf: 'CORPORATE', sourceIp: '10.200.15.42', destIp: '10.100.20.10', protocol: 'tcp', sourcePort: '40000', destPort: '443' },
+      { sourceNodeId: 'corp-pc-01', sourceVrf: 'CORPORATE', sourceIp: '10.200.15.42', destIp: '192.168.50.10', protocol: 'tcp', sourcePort: '40000', destPort: '5432' },
+      { sourceNodeId: 'internet', sourceVrf: 'default', sourceIp: '203.0.113.50', destIp: '198.51.100.10', protocol: 'tcp', sourcePort: '51112', destPort: '443' },
+      { sourceNodeId: 'internet', sourceVrf: 'default', sourceIp: '203.0.113.50', destIp: '192.168.50.10', protocol: 'tcp', sourcePort: '51112', destPort: '5432' },
+      { sourceNodeId: 'prod-web-01', sourceVrf: 'PRODUCTION', sourceIp: '10.100.20.10', destIp: '8.8.8.8', protocol: 'tcp', sourcePort: '1022', destPort: '53' },
+    ];
+    for (const f of flows) {
+      expect(executeSimulation(synced, links, f).status).toBe(executeSimulation(nodes, links, f).status);
+    }
+  });
+
+  test('a new firewall built from collected data places routes in its zones', () => {
+    const node = buildNode('fw9', 'FW9', 'firewall', {
+      ...empty,
+      interfaces: [
+        { name: 'ge-0/0/0', ip: '203.0.113.2/29', status: 'up', vrf: 'untrust' },
+        { name: 'ge-0/0/1', ip: '10.1.1.1/24', status: 'up', vrf: 'trust' },
+      ],
+      routes: [
+        { id: 'a', destination: '0.0.0.0/0', nextHop: '203.0.113.1', protocol: 'Static', metric: 0, vrf: 'default', origin: 'rib' },
+        { id: 'b', destination: '10.50.0.0/16', nextHop: '10.1.1.254', protocol: 'OSPF', metric: 0, vrf: 'default', origin: 'rib' },
+      ],
+    }, { ribVrfs: ['default'] });
+    expect(node.vrfs.map(v => v.name).sort()).toEqual(['trust', 'untrust']);
+    expect(node.vrfs.find(v => v.name === 'untrust')!.routes.some(r => r.destination === '0.0.0.0/0')).toBe(true);
+    expect(node.vrfs.find(v => v.name === 'trust')!.routes.some(r => r.destination === '10.50.0.0/16')).toBe(true);
   });
 });
 

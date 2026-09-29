@@ -250,6 +250,28 @@ describe('Cisco IOS parser', () => {
 // ---------------------------------------------------------------------------
 // FortiGate FortiOS
 // ---------------------------------------------------------------------------
+describe('Cisco IOS-XE VRF syntax', () => {
+  test('`vrf definition` and interface `vrf forwarding` bind interfaces to the VRF', () => {
+    const r = parseConfig(`hostname XE1
+!
+vrf definition PROD
+ rd 65000:1
+ address-family ipv4
+ exit-address-family
+!
+interface GigabitEthernet2
+ vrf forwarding PROD
+ ip address 10.100.1.1 255.255.255.0
+!
+interface GigabitEthernet3
+ ip address 10.200.1.1 255.255.255.0
+!`, 'cisco-ios');
+    expect(r.vrfs).toContain('PROD');
+    expect(r.interfaces.find(i => i.name === 'GigabitEthernet2')?.vrf).toBe('PROD');
+    expect(r.interfaces.find(i => i.name === 'GigabitEthernet3')?.vrf).toBeUndefined();
+  });
+});
+
 describe('FortiGate parser', () => {
   const result = parseConfig(FORTIGATE_CONFIG, 'fortigate');
 

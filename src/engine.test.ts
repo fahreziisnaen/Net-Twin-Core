@@ -149,6 +149,29 @@ const miniQuery = (over: Partial<PathQuery> = {}): PathQuery => ({
   ...over,
 });
 
+describe('routes whose next hop is an interface', () => {
+  test('a static route to a tunnel interface egresses that interface', () => {
+    const r1: NetworkNode = {
+      id: 'r1', name: 'R1', type: 'router', status: 'online',
+      vrfs: [{
+        name: 'default', description: '',
+        interfaces: [
+          { name: 'Gi0', ip: '10.1.1.1/24', status: 'up' },
+          { name: 'Tunnel0', ip: '172.31.0.1/30', status: 'up' },
+        ],
+        routes: [
+          { id: 'c', destination: '10.1.1.0/24', nextHop: 'Gi0', protocol: 'Connected', metric: 0, vrf: 'default' },
+          { id: 's', destination: '10.9.0.0/16', nextHop: 'Tunnel0', protocol: 'Static', metric: 0, vrf: 'default' },
+        ],
+      }],
+    };
+    const result = executeSimulation([r1], [], q({ sourceNodeId: 'r1', sourceVrf: 'default', sourceIp: '10.1.1.50', destIp: '10.9.1.1' }));
+    const hop = result.hops.find(h => h.nodeId === 'r1')!;
+    expect(hop.decision).toBe('Forwarded');
+    expect(hop.egressInterface).toBe('Tunnel0');
+  });
+});
+
 describe('firewall port matching', () => {
   const rangeRule = {
     id: 'r_range', name: 'Range rule', sourceVrf: 'LAN', destVrf: 'WAN',

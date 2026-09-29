@@ -61,6 +61,7 @@ Data MySQL tersimpan di volume `db_data` sehingga aman saat container di-recreat
 - Bila sebelumnya `CRED_KEY` memakai nilai bawaan `change-me-in-production` **atau lebih pendek dari 16 karakter**, SSH Sync kini menolaknya: set `CRED_KEY` baru (acak, ≥ 16 karakter) lalu **isi ulang password** koneksi SSH.
 - `COLLECTOR_TOKEN` kini wajib diisi (≥ 16 karakter disarankan) untuk SSH Sync; collector menolak semua request tanpa token.
 - Bundle server kini ada di `dist-server/server.cjs` (dulu `dist/server.cjs`, yang ikut ter-serve publik).
+- Profil parser bawaan yang sudah tersimpan tidak diperbarui otomatis (agar editan admin tidak tertimpa). Bila Anda tidak pernah mengedit profil bawaan, klik **Parser Profiles → Reset built-in profiles** setelah upgrade untuk mendapat perbaikan parser terbaru (mis. dukungan `vrf definition` IOS-XE).
 
 ## Menjalankan tanpa Docker (mode dev)
 

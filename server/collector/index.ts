@@ -4,6 +4,7 @@ import { ParserProfile } from '../parsers/types';
 import { decryptSecret } from '../crypto';
 import { commandsFor, CollectIntent, isVendorSupported } from './whitelist';
 import { normalizeRib, normalizeVrfRib, normalizeArp, normalizeNeighbors, NormalizedArp, NormalizedNeighbor } from './normalize';
+import { sameRoute, isLearned, ribCoversAllVrfs } from '../../src/nodeUtils';
 
 const COLLECT_TIMEOUT_MS = 45_000;
 
@@ -11,6 +12,9 @@ const COLLECT_TIMEOUT_MS = 45_000;
 export function collectorConfigured(): boolean {
   return !!process.env.COLLECTOR_URL && !!process.env.COLLECTOR_TOKEN;
 }
+
+// Vendors whose VRFs are routing instances (not firewall security zones).
+const ROUTER_VENDORS = new Set(['cisco_ios', 'juniper_junos']);
 
 // Netmiko device_type -> parser profile id (for the running-config parse)
 const PROFILE_FOR_VENDOR: Record<string, string> = {
@@ -99,9 +103,20 @@ export function assemble(vendor: string, raw: Record<string, string>, profiles: 
   const ribVrfs = [...new Set([...global.vrfs, ...perVrf.vrfs])];
   const ribRoutes: Route[] = [...global.routes, ...perVrf.routes].map(r => ({ ...r, origin: 'rib' as const }));
   const configRoutes: Route[] = (parsed?.routes || []).map((r, i) => ({ ...r, id: `cfg_r_${i}` }));
-  const routes = ribVrfs.length ? ribRoutes : configRoutes;
-  if (raw.routes && !global.vrfs.length) {
+  let routes = ribVrfs.length ? ribRoutes : configRoutes;
+  if (!ribVrfs.length && (raw.routes || raw.vrfRoutes)) {
     warnings.push('The device routing table could not be read; routes come from the static routes in the config.');
+  } else if (ribVrfs.length && ROUTER_VENDORS.has(vendor)) {
+    // Routers read VRF tables with a separate command (IOS `show ip route vrf *`)
+    // that can fail on its own: keep the config's static routes for any VRF
+    // whose table wasn't read rather than losing them. (Firewalls print every
+    // table in one command and label config routes by zone, so they don't.)
+    const fallback = configRoutes.filter(r => !ribVrfs.includes(r.vrf || 'default'));
+    if (fallback.length) {
+      routes = [...ribRoutes, ...fallback];
+      const unread = [...new Set(fallback.map(r => r.vrf || 'default'))];
+      warnings.push(`The routing table of VRF ${unread.join(', ')} could not be read; static routes from the config are used there.`);
+    }
   }
   const firewallRules: FirewallRule[] = (parsed?.firewallRules || []).map((r, i) => ({ ...r, id: `cfg_fw_${i}` }));
 
@@ -177,18 +192,22 @@ export function computeDrift(data: CollectedData, target: NetworkNode | undefine
     if (!twinIfs.has(i.name)) ifAdded++;
     else if (twinIfs.get(i.name) !== i.ip) ifChanged++;
   }
-  const twinRoutes = new Set(target.vrfs.flatMap(v => v.routes).map(r => `${r.destination}|${r.nextHop}`));
-  const collectedRouteKeys = new Set(data.routes.map(r => `${r.destination}|${r.nextHop}`));
-  let rAdded = 0;
-  for (const k of collectedRouteKeys) if (!twinRoutes.has(k)) rAdded++;
-  let rRemoved = 0;
-  for (const k of twinRoutes) if (!collectedRouteKeys.has(k)) rRemoved++;
+  // Mirror what Apply (mergeIntoNode) will do: routes are compared the way the
+  // merge compares them, and "removed" only counts learned routes in tables
+  // that were read — the ones Apply actually drops.
+  const zoned = ribCoversAllVrfs(target, data.ribVrfs);
+  const twinRoutes = target.vrfs.flatMap(v => v.routes.map(r => ({ ...r, vrf: v.name })));
+  const sameTable = (a: Route, b: Route) => zoned || (a.vrf || 'default') === (b.vrf || 'default');
+  const rAdded = data.routes.filter(r => !twinRoutes.some(t => sameTable(t, r) && sameRoute(t, r))).length;
+  const rRemoved = twinRoutes.filter(t =>
+    isLearned(t) && (zoned || data.ribVrfs.includes(t.vrf)) && !data.routes.some(r => sameTable(t, r) && sameRoute(t, r))
+  ).length;
 
   return {
     targetName: target.name,
     interfaces: { added: ifAdded, changed: ifChanged },
     routes: { added: rAdded, removed: rRemoved },
     firewallRules: { added: data.firewallRules.length },
-    summary: `${ifAdded} new / ${ifChanged} changed interfaces, ${rAdded} new / ${rRemoved} missing routes vs twin.`,
+    summary: `${ifAdded} new / ${ifChanged} changed interfaces, ${rAdded} new / ${rRemoved} withdrawn routes vs twin.`,
   };
 }

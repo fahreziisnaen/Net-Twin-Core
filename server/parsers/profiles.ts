@@ -17,6 +17,7 @@ const CISCO_IOS: ParserProfile = {
   rules: [
     { match: '^hostname (\\S+)', setHostname: '$1' },
     { match: '^ip vrf (\\S+)$', addVrf: '$1' },
+    { match: '^vrf definition (\\S+)$', addVrf: '$1' }, // IOS-XE syntax
 
     // Interface block
     { match: '^interface (\\S+)', push: { id: 'interface', keyGroup: 1 } },
@@ -24,7 +25,7 @@ const CISCO_IOS: ParserProfile = {
       accumulate: { context: 'interface', target: 'interfaces', fields: { name: { ctx: 'interface' }, status: { lit: 'up' } } } },
     { match: '^ip address (\\S+) (\\S+)', context: 'interface',
       accumulate: { context: 'interface', target: 'interfaces', fields: { ip: { transform: 'maskToCidr', arg: { concat: [{ group: 1 }, { group: 2 }] } } } } },
-    { match: '^ip vrf forwarding (\\S+)', context: 'interface',
+    { match: '^(?:ip )?vrf forwarding (\\S+)', context: 'interface', // classic IOS / IOS-XE
       accumulate: { context: 'interface', target: 'interfaces', fields: { vrf: '$1' } } },
     { match: '^shutdown$', context: 'interface',
       accumulate: { context: 'interface', target: 'interfaces', fields: { status: { lit: 'down' } } } },

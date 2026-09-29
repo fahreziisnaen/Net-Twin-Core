@@ -316,7 +316,7 @@ inet6.0: 1 destinations, 1 routes (1 active, 0 holddown, 0 hidden)
     expect(rib.vrfs).toEqual(['default', 'PROD']);
     expect(rib.routes.some(r => r.destination === '10.255.0.1/32')).toBe(false);
     const r = byDest(rib.routes);
-    expect(r['10.100.1.0/24']).toMatchObject({ protocol: 'Connected', nextHop: 'ge-0/0/2.100', vrf: 'PROD' });
+    expect(r['10.100.1.0/24']).toMatchObject({ protocol: 'Connected', nextHop: 'ge-0/0/2', vrf: 'PROD' });
     expect(r['172.16.5.0/24']).toMatchObject({ protocol: 'BGP', nextHop: '10.100.1.2', vrf: 'PROD' });
   });
 
@@ -324,6 +324,103 @@ inet6.0: 1 destinations, 1 routes (1 active, 0 holddown, 0 hidden)
     const r = byDest(normalizeRib('juniper_junos', JUNOS_MULTI).routes);
     expect(r['10.20.0.0/16']).toMatchObject({ nextHop: '10.10.1.254', metric: 3, vrf: 'default' });
     expect(r['10.10.1.1/32']).toBeUndefined();
+  });
+});
+
+// ---- Layouts found on real devices (regressions from review) --------------
+
+describe('cisco_ios RIB: common real-world layouts', () => {
+  const IOS_EDGE = `Codes: L - local, C - connected, S - static, O - OSPF, B - BGP, o - ODR
+Gateway of last resort is 10.1.1.2 to network 0.0.0.0
+
+O*E2  0.0.0.0/0 [110/1] via 10.1.1.2, 00:00:10, GigabitEthernet0/0
+      1.0.0.0/32 is subnetted, 2 subnets
+O        1.1.1.1 [110/2] via 10.1.1.2, 00:00:05, GigabitEthernet0/0
+O        1.1.1.2 [110/3] via 10.1.1.2, 00:00:05, GigabitEthernet0/0
+      10.0.0.0/8 is variably subnetted, 2 subnets, 2 masks
+C        10.1.1.0/24 is directly connected, GigabitEthernet0/0
+L        10.1.1.1/32 is directly connected, GigabitEthernet0/0
+O E2     192.168.100.0/24
+           [110/20] via 10.1.1.2, 00:00:05, GigabitEthernet0/0
+B        10.0.0.0/8 [200/0] via 0.0.0.0, 00:10:00, Null0
+o        172.30.0.0/16 [160/1] via 10.1.1.9, 00:00:30, GigabitEthernet0/0
+S        10.9.0.0/16 is directly connected, Tunnel0`;
+  const r = byDest(normalizeRib('cisco_ios', IOS_EDGE).routes);
+
+  test('OSPF default route with a starred compound code (O*E2)', () => {
+    expect(r['0.0.0.0/0']).toMatchObject({ protocol: 'OSPF', nextHop: '10.1.1.2', metric: 1 });
+  });
+  test('children of an "is subnetted" header take the header mask', () => {
+    expect(r['1.1.1.1/32']).toMatchObject({ protocol: 'OSPF', nextHop: '10.1.1.2', metric: 2 });
+    expect(r['1.1.1.2/32']).toMatchObject({ protocol: 'OSPF', metric: 3 });
+  });
+  test('a next hop wrapped onto the following line', () => {
+    expect(r['192.168.100.0/24']).toMatchObject({ protocol: 'OSPF', nextHop: '10.1.1.2', metric: 20 });
+  });
+  test('discard routes (via 0.0.0.0 / Null0) and ODR are not imported', () => {
+    expect(r['10.0.0.0/8']).toBeUndefined();
+    expect(r['172.30.0.0/16']).toBeUndefined();
+  });
+  test('a static route pointing at an interface keeps the interface as next hop', () => {
+    expect(r['10.9.0.0/16']).toMatchObject({ protocol: 'Static', nextHop: 'Tunnel0' });
+  });
+});
+
+describe('fortinet RIB: real-world layouts', () => {
+  const FORTI_EDGE = `Routing table for VRF=0
+O*E2    0.0.0.0/0 [110/10] via 10.10.1.254, port2, 00:05:23, [1/0]
+S       10.9.0.0/16 [10/0] via VPN-HQ tunnel 203.0.113.9, [1/0]
+S       10.8.0.0/16 [10/0] is directly connected, port3, [1/0]
+C       10.10.1.0/24 is directly connected, port2
+`;
+  const r = byDest(normalizeRib('fortinet', FORTI_EDGE).routes);
+  test('OSPF default, IPsec tunnel route and interface route', () => {
+    expect(r['0.0.0.0/0']).toMatchObject({ protocol: 'OSPF', nextHop: '10.10.1.254' });
+    expect(r['10.9.0.0/16']).toMatchObject({ protocol: 'Static', nextHop: 'VPN-HQ' });
+    expect(r['10.8.0.0/16']).toMatchObject({ protocol: 'Static', nextHop: 'port3' });
+    expect(r['10.10.1.0/24']).toMatchObject({ protocol: 'Connected', nextHop: 'port2' });
+  });
+});
+
+describe('interface routes on PAN-OS / ScreenOS (gateway 0.0.0.0)', () => {
+  test('PAN-OS static to a tunnel interface', () => {
+    const out = `VIRTUAL ROUTER: default (id 1)
+10.9.0.0/16          0.0.0.0          10     A S          tunnel.1`;
+    expect(normalizeRib('paloalto_panos', out).routes[0]).toMatchObject({ protocol: 'Static', nextHop: 'tunnel.1' });
+  });
+  test('ScreenOS static to a tunnel interface', () => {
+    const out = `IPv4 Dest-Routes for <trust-vr> (1 entries)
+*         8       10.9.0.0/16         tunnel.1        0.0.0.0   S   20      1     Root`;
+    expect(normalizeRib('juniper_screenos', out).routes[0]).toMatchObject({ protocol: 'Static', nextHop: 'tunnel.1' });
+  });
+});
+
+describe('juniper_junos RIB: real-world layouts', () => {
+  const JUNOS_EDGE = `inet.0: 3 destinations, 4 routes (3 active, 0 holddown, 0 hidden)
+10.5.0.0/16        *[Static/5] 00:10:00
+                      Discard
+                    [OSPF/150] 00:05:00, metric 0, tag 0
+                    > to 10.1.1.254 via ge-0/0/1.0
+10.1.1.0/24        *[Direct/0] 01:00:00
+                    > via ge-0/0/1.0
+10.2.2.0/24        *[Direct/0] 01:00:00
+                    > via ge-0/0/2.100
+
+__juniper_private1__.inet.0: 1 destinations, 1 routes (1 active, 0 holddown, 0 hidden)
+10.0.0.1/32        *[Direct/0] 01:00:00
+                    > via lo0.16385
+`;
+  const rib = normalizeRib('juniper_junos', JUNOS_EDGE);
+  const r = byDest(rib.routes);
+  test('an active discard route does not borrow the next hop of an inactive route', () => {
+    expect(r['10.5.0.0/16']).toBeUndefined();
+  });
+  test('internal (__...__) instances are not VRFs', () => {
+    expect(rib.vrfs).toEqual(['default']);
+  });
+  test('interface names match the config parser (no .unit suffix)', () => {
+    expect(r['10.1.1.0/24'].nextHop).toBe('ge-0/0/1');
+    expect(r['10.2.2.0/24'].nextHop).toBe('ge-0/0/2');
   });
 });
 
