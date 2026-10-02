@@ -41,6 +41,8 @@ Aplikasi sudah berisi **topologi contoh** (Core-R1, Core-R2, Edge-FW01, zona PRO
 
 Buka `http://localhost:3000`. Login pertama dengan user **admin** dan password dari `ADMIN_PASSWORD`. Bila `ADMIN_PASSWORD` tidak di-set: di mode dev (`npm run dev`) password-nya **admin123**; di produksi/Docker password acak dibuat sekali dan dicetak di log (`docker compose logs app | grep password`). Segera ganti password setelah login.
 
+Jika akun Anda memakai **2FA**, setelah password akan muncul isian **kode 6 digit** dari aplikasi authenticator. Kehilangan HP? Masukkan salah satu **kode cadangan** (sekali pakai) atau minta admin me-reset 2FA Anda.
+
 Tombol & form untuk aksi yang tidak diizinkan role Anda disembunyikan. Perubahan role oleh admin berlaku **langsung** (tanpa perlu login ulang); mengganti password membuat sesi lama pengguna tersebut tidak berlaku.
 
 Tiga peran:
@@ -283,6 +285,8 @@ Menu **Simulator Settings** (kebanyakan admin-only).
 - **Twin Synchronization Center** — **Revert to Certified State**: kembalikan seluruh topologi/rule/NAT/audit/change ke kondisi awal (data demo/seed).
 - **Factory Reset (Kosongkan Twin)** — hapus permanen **semua data twin** (device beserta route/rule/NAT, kabel, audit, change request, reservasi IPAM) supaya Anda mulai memodelkan jaringan sendiri dari nol tanpa data demo. Akun user, koneksi SSH, profil parser, dan pengaturan engine **tetap**. Konfirmasinya dengan mengetik `RESET`; tidak bisa dibatalkan, jadi export snapshot dulu bila perlu. Twin tetap kosong setelah restart.
 - **User Management** — tambah user (username, password ≥6, role), ubah role, reset password, hapus user. Ada proteksi: tidak bisa menghapus/menurunkan **admin terakhir** atau menghapus akun sendiri.
+- **Keamanan Akun (2FA)** — semua role. Aktifkan: masukkan password → pindai QR code (Google Authenticator dsb.) → masukkan kode 6 digit → simpan 10 kode cadangan (salin/unduh; hanya tampil sekali). Matikan: password + kode (atau kode cadangan). Peringatan muncul bila kode cadangan tinggal ≤ 3.
+- **User Management → Reset 2FA** (admin) — untuk user lain yang kehilangan HP; user tersebut lalu login dengan password saja dan bisa mendaftar ulang.
 
 ---
 
@@ -352,5 +356,7 @@ Sebuah profile adalah objek JSON:
 | "… was changed by someone else since you loaded it" | Pengguna lain menyimpan device yang sama lebih dulu. Data terbaru otomatis dimuat ulang — ulangi perubahan Anda. |
 | SSH Sync: "CRED_KEY is not configured" | `CRED_KEY` belum di-set / terlalu pendek / masih nilai contoh. Bila `CRED_KEY` diganti, password perangkat yang tersimpan tidak bisa dibuka lagi — isi ulang di menu SSH Sync. |
 | Perubahan hilang setelah restart (mode dev) | Pastikan folder `data/` bisa ditulis; state tersimpan di `data/*.json`. Dengan Docker, data ada di volume MySQL `db_data`. File JSON yang rusak dipindah ke `*.corrupt-<waktu>` (tidak ditimpa) agar bisa dipulihkan manual. |
+| Kode 2FA selalu ditolak | Pastikan jam HP otomatis/akurat (toleransi ±30 detik) dan pakai kode yang sedang tampil; kode yang sudah dipakai tidak diterima lagi. Kalau `JWT_SECRET` baru saja diganti, pakai kode cadangan lalu daftar ulang. |
+| Kehilangan HP 2FA | Login dengan kode cadangan, atau minta admin **Reset 2FA**. Admin tunggal tanpa kode cadangan: lihat "Pemulihan darurat" di README. |
 
 Butuh mengembalikan semuanya ke kondisi awal? **Settings → Revert to Certified State** (twin kembali ke data demo) dan **Parser Profiles → Reset profile bawaan** (parser). Ingin twin benar-benar kosong? **Settings → Factory Reset (Kosongkan Twin)**.

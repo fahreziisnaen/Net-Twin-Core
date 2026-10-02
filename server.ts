@@ -16,7 +16,7 @@ import { deriveProbeQuery } from './src/changeUtils';
 import { getSeedNodes, getSeedLinks, getSeedAudits, getSeedChangeRequests } from './src/seedData';
 import { ROLES, Role, canAccess } from './src/rbac';
 import { DeviceConnection } from './src/types';
-import { createStorage, TwinState } from './server/storage';
+import { createStorage, TwinState, UserRecord } from './server/storage';
 import { parseConfig, detectVendor, runProfile, SEED_PROFILES } from './server/parsers';
 import { ParserProfile } from './server/parsers/types';
 import { encryptSecret, credKeyConfigured } from './server/crypto';
@@ -48,9 +48,14 @@ import {
   ensureAdminSeed,
   authCookieOptions,
   clearAuthCookie,
+  signChallenge,
+  resolveChallenge,
+  deriveKey,
   MIN_PASSWORD_LENGTH,
   MAX_PASSWORD_LENGTH,
 } from './server/auth';
+import { createTwoFactorService, TwoFactorError } from './server/twoFactor';
+import { createThrottle } from './server/throttle';
 
 const app = express();
 app.disable('x-powered-by');
@@ -92,6 +97,8 @@ const newId = (prefix: string) => `${prefix}_${Date.now()}_${crypto.randomBytes(
 // The twin lives in memory and is flushed to the storage backend (MySQL when
 // DB_HOST is configured, JSON files otherwise) after every mutation.
 const storage = createStorage();
+// Two-factor authentication; TOTP secrets are encrypted with a key derived from JWT_SECRET.
+const twoFactor = createTwoFactorService(storage, () => deriveKey('nettwin-totp'));
 
 let nodes: NetworkNode[] = getSeedNodes();
 let links: NetworkLink[] = getSeedLinks();
@@ -176,7 +183,13 @@ function noteLoginFailure(ip: string) {
 setInterval(() => {
   const now = Date.now();
   for (const [ip, rec] of loginAttempts) if (now > rec.resetAt) loginAttempts.delete(ip);
+  twoFactorFailures.sweep();
 }, LOGIN_WINDOW_MS).unref();
+
+// Wrong 2FA codes also count per account, so neither rotating source IPs nor
+// signing in to another account from the same IP resets a guesser's budget.
+const twoFactorFailures = createThrottle(LOGIN_MAX, LOGIN_WINDOW_MS);
+const TOO_MANY_CODES = 'Too many wrong codes for this account. Try again in a few minutes.';
 
 const USERNAME_RE = /^[A-Za-z0-9._@-]{1,64}$/;
 
@@ -202,6 +215,10 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
     noteLoginFailure(ip);
     return res.status(401).json({ error: 'Invalid username or password' });
   }
+  // Password is right; with 2FA on, the session waits for the second step.
+  if (await twoFactor.isEnabled(user.id)) {
+    return res.json({ twoFactorRequired: true, challenge: signChallenge(user) });
+  }
   loginAttempts.delete(ip);
   res.cookie(AUTH_COOKIE, signToken(user), authCookieOptions(req));
   res.json({ user: { id: user.id, username: user.username, role: user.role } });
@@ -217,9 +234,111 @@ app.get('/api/auth/me', (req: AuthedRequest, res) => {
   res.json({ user: req.user });
 });
 
+// Second login step for accounts with 2FA. Wrong codes count toward the same
+// per-IP limit as wrong passwords.
+app.post('/api/auth/login/2fa', asyncRoute(async (req, res) => {
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  if (loginBlocked(ip)) {
+    return res.status(429).json({ error: 'Too many failed login attempts. Try again in a few minutes.' });
+  }
+  const { challenge, code } = req.body || {};
+  if (typeof challenge !== 'string' || typeof code !== 'string' || !code.trim()) {
+    return res.status(400).json({ error: 'challenge and code are required' });
+  }
+  const user = await resolveChallenge(storage, challenge);
+  if (!user) return res.status(401).json({ error: 'Sign-in expired. Enter your password again.', restart: true });
+  if (twoFactorFailures.blocked(user.id)) return res.status(429).json({ error: TOO_MANY_CODES });
+  const result = await twoFactor.verify(user.id, code);
+  if (!result.ok) {
+    noteLoginFailure(ip);
+    twoFactorFailures.fail(user.id);
+    return res.status(401).json({
+      error: result.unreadableSecret
+        ? 'This authenticator can no longer be verified because the server key changed. Use a recovery code, or ask an admin to reset two-factor authentication.'
+        : 'Invalid code.',
+    });
+  }
+  loginAttempts.delete(ip);
+  twoFactorFailures.clear(user.id);
+  if (result.usedRecoveryCode) {
+    console.log(`[AUDIT] 2FA recovery code used by "${user.username}" (${result.recoveryCodesLeft} left)`);
+  }
+  res.cookie(AUTH_COOKIE, signToken(user), authCookieOptions(req));
+  res.json({
+    user: { id: user.id, username: user.username, role: user.role },
+    ...(result.usedRecoveryCode ? { recoveryCodesLeft: result.recoveryCodesLeft } : {}),
+  });
+}));
+
+// ---- Account security: the signed-in user's own 2FA -----------------------
+
+// Re-check the signed-in user's password before a 2FA change. Wrong
+// passwords count toward the login limit like any other guess.
+async function confirmPassword(req: AuthedRequest, res: Response): Promise<UserRecord | null> {
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  if (loginBlocked(ip)) {
+    res.status(429).json({ error: 'Too many failed login attempts. Try again in a few minutes.' });
+    return null;
+  }
+  const password = req.body?.password;
+  const user = await storage.getUserById(req.user!.id);
+  if (typeof password !== 'string' || !user || !(await verifyLogin(user, password))) {
+    noteLoginFailure(ip);
+    res.status(401).json({ error: 'Incorrect password.' });
+    return null;
+  }
+  return user;
+}
+
+app.get('/api/auth/2fa', requireAction('read'), asyncRoute(async (req, res) => {
+  res.json(await twoFactor.status(req.user!.id));
+}));
+
+app.post('/api/auth/2fa/setup', requireAction('read'), asyncRoute(async (req, res) => {
+  const user = await confirmPassword(req, res);
+  if (!user) return;
+  res.json(await twoFactor.setup(user.id, user.username));
+}));
+
+app.post('/api/auth/2fa/enable', requireAction('read'), asyncRoute(async (req, res) => {
+  const code = req.body?.code;
+  if (typeof code !== 'string' || !code.trim()) return res.status(400).json({ error: 'code is required' });
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  if (loginBlocked(ip) || twoFactorFailures.blocked(req.user!.id)) return res.status(429).json({ error: TOO_MANY_CODES });
+  let recoveryCodes: string[];
+  try {
+    recoveryCodes = await twoFactor.enable(req.user!.id, code);
+  } catch (err) {
+    // A wrong first code counts toward the same limits as a wrong login code.
+    if (err instanceof TwoFactorError && err.status === 401) {
+      noteLoginFailure(ip);
+      twoFactorFailures.fail(req.user!.id);
+    }
+    throw err;
+  }
+  twoFactorFailures.clear(req.user!.id);
+  console.log(`[AUDIT] 2FA enabled by "${req.user!.username}"`);
+  res.json({ recoveryCodes });
+}));
+
+app.post('/api/auth/2fa/disable', requireAction('read'), asyncRoute(async (req, res) => {
+  const user = await confirmPassword(req, res);
+  if (!user) return;
+  if (twoFactorFailures.blocked(user.id)) return res.status(429).json({ error: TOO_MANY_CODES });
+  const code = req.body?.code;
+  if (typeof code !== 'string' || !(await twoFactor.disable(user.id, code))) {
+    noteLoginFailure(req.ip || req.socket.remoteAddress || 'unknown');
+    twoFactorFailures.fail(user.id);
+    return res.status(401).json({ error: 'Invalid code.' });
+  }
+  twoFactorFailures.clear(user.id);
+  console.log(`[AUDIT] 2FA disabled by "${user.username}"`);
+  res.json({ success: true });
+}));
+
 app.get('/api/users', requireAction('manage-users'), asyncRoute(async (req, res) => {
-  const users = await storage.listUsers();
-  res.json(users.map(u => ({ id: u.id, username: u.username, role: u.role })));
+  const [users, withTwoFactor] = await Promise.all([storage.listUsers(), twoFactor.enabledUserIds()]);
+  res.json(users.map(u => ({ id: u.id, username: u.username, role: u.role, twoFactorEnabled: withTwoFactor.has(u.id) })));
 }));
 
 app.post('/api/users', requireAction('manage-users'), asyncRoute(async (req, res) => {
@@ -293,6 +412,19 @@ app.delete('/api/users/:id', requireAction('manage-users'), asyncRoute(async (re
     return res.status(400).json({ error: 'Cannot delete the last admin' });
   }
   await storage.deleteUser(id);
+  res.json({ success: true });
+}));
+
+// Lost phone: an admin turns 2FA off for another user (no code needed).
+app.delete('/api/users/:id/2fa', requireAction('manage-users'), asyncRoute(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (req.user!.id === id) {
+    return res.status(400).json({ error: 'Turn off your own two-factor authentication under Account Security (it needs a code).' });
+  }
+  const target = await storage.getUserById(id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  await twoFactor.reset(id);
+  console.log(`[AUDIT] 2FA reset for "${target.username}" by "${req.user!.username}"`);
   res.json({ success: true });
 }));
 
@@ -938,6 +1070,7 @@ app.all('/api/*', (req, res) => {
 function errorHandler(err: any, req: Request, res: Response, next: NextFunction) {
   if (res.headersSent) return next(err);
   if (err instanceof ValidationError) return res.status(400).json({ error: err.message });
+  if (err instanceof TwoFactorError) return res.status(err.status).json({ error: err.message });
   const status = err?.status || err?.statusCode;
   if (status >= 400 && status < 500) {
     const message = err.type === 'entity.parse.failed' ? 'Malformed JSON request body' : (err.expose ? err.message : 'Bad request');

@@ -3,12 +3,14 @@ import { SimulationSettings } from '../types';
 import { Role, ROLES } from '../rbac';
 import { useLang } from '../i18n';
 import { useDialog } from './DialogProvider';
-import { Sliders, RefreshCw, Save, Download, Upload, CheckCircle2, AlertCircle, Users, Plus, Trash2, KeyRound, Eraser } from 'lucide-react';
+import TwoFactorCard from './TwoFactorCard';
+import { Sliders, RefreshCw, Save, Download, Upload, CheckCircle2, AlertCircle, Users, Plus, Trash2, KeyRound, Eraser, ShieldOff } from 'lucide-react';
 
 interface ManagedUser {
   id: number;
   username: string;
   role: Role;
+  twoFactorEnabled?: boolean;
 }
 
 interface SettingsTabProps {
@@ -195,6 +197,23 @@ export default function SettingsTab({ onResetTopology, onFactoryReset, currentUs
     }
   };
 
+  const handleResetTwoFactor = async (user: ManagedUser) => {
+    const ok = await dialog.confirm(
+      t('Turn off two-factor authentication for "{name}"? They can sign in with their password only until they set it up again.', { name: user.username }),
+      { title: t('Reset 2FA'), tone: 'danger', confirmLabel: t('Reset 2FA') },
+    );
+    if (!ok) return;
+    try {
+      const res = await fetch(`/api/users/${user.id}/2fa`, { method: 'DELETE' });
+      const data = await bodyOf(res);
+      if (!res.ok) throw new Error(data.error || t('Failed to reset 2FA'));
+      flash('ok', t('Two-factor authentication for "{name}" was reset.', { name: user.username }));
+      await loadUsers();
+    } catch (err: any) {
+      flash('error', err.message);
+    }
+  };
+
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -229,6 +248,8 @@ export default function SettingsTab({ onResetTopology, onFactoryReset, currentUs
           {message.text}
         </div>
       )}
+
+      <TwoFactorCard username={currentUser.username} />
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         {/* Simulation Engine Parameters */}
@@ -381,6 +402,9 @@ export default function SettingsTab({ onResetTopology, onFactoryReset, currentUs
                       {u.id === currentUser.id && (
                         <span className="ml-2 text-[9px] bg-blue-50 text-blue-700 border border-blue-100 px-1.5 py-0.5 rounded-full font-bold uppercase">{t('You')}</span>
                       )}
+                      {u.twoFactorEnabled && (
+                        <span className="ml-2 text-[9px] bg-emerald-50 text-emerald-700 border border-emerald-100 px-1.5 py-0.5 rounded-full font-bold uppercase">2FA</span>
+                      )}
                     </td>
                     <td className="py-3 px-6">
                       <select
@@ -395,6 +419,15 @@ export default function SettingsTab({ onResetTopology, onFactoryReset, currentUs
                       </select>
                     </td>
                     <td className="py-3 px-6 text-right space-x-1">
+                      {u.twoFactorEnabled && u.id !== currentUser.id && (
+                        <button
+                          onClick={() => handleResetTwoFactor(u)}
+                          className="p-1.5 text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded transition"
+                          title={t('Reset 2FA')}
+                        >
+                          <ShieldOff size={13} />
+                        </button>
+                      )}
                       <button
                         onClick={() => handleResetPassword(u)}
                         className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded transition"

@@ -21,6 +21,14 @@ export interface UserRecord {
   role: Role;
 }
 
+// Per-user 2FA state; server/twoFactor.ts owns its meaning.
+export interface TwoFactorRecord {
+  secretEnc: string;        // TOTP secret, AES-256-GCM encrypted
+  enabled: boolean;         // false while enrollment awaits its first code
+  recoveryHashes: string[]; // SHA-256 of the unused recovery codes
+  lastStep: number;         // last accepted TOTP time step (replay guard)
+}
+
 export interface Storage {
   readonly kind: 'mysql' | 'file';
   init(): Promise<void>;
@@ -32,6 +40,9 @@ export interface Storage {
   createUser(username: string, passwordHash: string, role: Role): Promise<UserRecord>;
   updateUser(id: number, fields: Partial<Pick<UserRecord, 'passwordHash' | 'role'>>): Promise<void>;
   deleteUser(id: number): Promise<void>;
+  getTwoFactor(userId: number): Promise<TwoFactorRecord | null>;
+  saveTwoFactor(userId: number, record: TwoFactorRecord | null): Promise<void>;
+  listTwoFactorEnabled(): Promise<number[]>;
   loadProfiles(): Promise<ParserProfile[] | null>;
   saveProfiles(profiles: ParserProfile[]): Promise<void>;
   loadConnections(): Promise<DeviceConnection[]>;
@@ -75,6 +86,7 @@ export class FileStorage implements Storage {
   private usersFile = path.join(this.dataDir, 'users.json');
   private profilesFile = path.join(this.dataDir, 'parser-profiles.json');
   private connectionsFile = path.join(this.dataDir, 'device-connections.json');
+  private twoFactorFile = path.join(this.dataDir, 'two-factor.json');
 
   async init(): Promise<void> {
     if (!fs.existsSync(this.dataDir)) fs.mkdirSync(this.dataDir, { recursive: true });
@@ -144,6 +156,29 @@ export class FileStorage implements Storage {
 
   async deleteUser(id: number): Promise<void> {
     this.writeUsers(this.readUsers().filter(u => u.id !== id));
+    // Ids are reused (max + 1), so a later user must not inherit this 2FA.
+    await this.saveTwoFactor(id, null);
+  }
+
+  private readTwoFactor(): Record<string, TwoFactorRecord> {
+    const raw = readJsonFile(this.twoFactorFile);
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, TwoFactorRecord>) : {};
+  }
+
+  async getTwoFactor(userId: number): Promise<TwoFactorRecord | null> {
+    const all = this.readTwoFactor();
+    return Object.prototype.hasOwnProperty.call(all, String(userId)) ? all[String(userId)] : null;
+  }
+
+  async saveTwoFactor(userId: number, record: TwoFactorRecord | null): Promise<void> {
+    const all = this.readTwoFactor();
+    if (record) all[String(userId)] = record;
+    else delete all[String(userId)];
+    writeJsonAtomic(this.twoFactorFile, all);
+  }
+
+  async listTwoFactorEnabled(): Promise<number[]> {
+    return Object.entries(this.readTwoFactor()).filter(([, r]) => r.enabled).map(([id]) => Number(id));
   }
 
   async loadProfiles(): Promise<ParserProfile[] | null> {
@@ -240,6 +275,12 @@ export class MySqlStorage implements Storage {
       `CREATE TABLE IF NOT EXISTS device_connections (
         id VARCHAR(128) PRIMARY KEY,
         data JSON NOT NULL
+      )`,
+      // Separate table so upgrading a live database never alters `users`.
+      `CREATE TABLE IF NOT EXISTS user_two_factor (
+        user_id INT PRIMARY KEY,
+        data JSON NOT NULL,
+        CONSTRAINT fk_user_two_factor_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )`,
     ];
     for (const stmt of ddl) {
@@ -361,6 +402,27 @@ export class MySqlStorage implements Storage {
 
   async deleteUser(id: number): Promise<void> {
     await this.pool.query('DELETE FROM users WHERE id = ?', [id]);
+  }
+
+  async getTwoFactor(userId: number): Promise<TwoFactorRecord | null> {
+    const [rows] = await this.pool.query('SELECT data FROM user_two_factor WHERE user_id = ?', [userId]);
+    const row = (rows as { data: unknown }[])[0];
+    return row ? MySqlStorage.parseData<TwoFactorRecord>(row.data) : null;
+  }
+
+  async saveTwoFactor(userId: number, record: TwoFactorRecord | null): Promise<void> {
+    if (!record) {
+      await this.pool.query('DELETE FROM user_two_factor WHERE user_id = ?', [userId]);
+      return;
+    }
+    await this.pool.query('REPLACE INTO user_two_factor (user_id, data) VALUES (?, ?)', [userId, JSON.stringify(record)]);
+  }
+
+  async listTwoFactorEnabled(): Promise<number[]> {
+    const [rows] = await this.pool.query('SELECT user_id, data FROM user_two_factor');
+    return (rows as { user_id: number; data: unknown }[])
+      .filter(r => MySqlStorage.parseData<TwoFactorRecord>(r.data).enabled)
+      .map(r => r.user_id);
   }
 
   async loadProfiles(): Promise<ParserProfile[] | null> {

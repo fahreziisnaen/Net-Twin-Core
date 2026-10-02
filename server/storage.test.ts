@@ -2,7 +2,7 @@ import { describe, test, expect, vi, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { FileStorage, MySqlStorage, TwinState } from './storage';
+import { FileStorage, MySqlStorage, TwinState, TwoFactorRecord } from './storage';
 
 const state = (nodes: unknown[] = []): TwinState => ({
   nodes: nodes as TwinState['nodes'],
@@ -69,6 +69,31 @@ describe('FileStorage', () => {
     expect((await storage.getUserById(u.id))?.username).toBe('alice');
     expect(await storage.getUserById(999)).toBeNull();
   });
+
+  const rec = (enabled: boolean): TwoFactorRecord => ({ secretEnc: 'v1.a.b.c', enabled, recoveryHashes: ['h1'], lastStep: 5 });
+
+  test('two-factor records round-trip and enabled users are listed', async () => {
+    const { storage } = tempStorage();
+    await storage.init();
+    await storage.saveTwoFactor(1, rec(true));
+    await storage.saveTwoFactor(2, rec(false));
+    expect(await storage.getTwoFactor(1)).toEqual(rec(true));
+    expect(await storage.getTwoFactor(3)).toBeNull();
+    expect(await storage.listTwoFactorEnabled()).toEqual([1]);
+    await storage.saveTwoFactor(1, null);
+    expect(await storage.getTwoFactor(1)).toBeNull();
+  });
+
+  test('a deleted user does not pass 2FA on to a new user with the same id', async () => {
+    const { storage } = tempStorage();
+    await storage.init();
+    const first = await storage.createUser('alice', 'hash', 'viewer');
+    await storage.saveTwoFactor(first.id, rec(true));
+    await storage.deleteUser(first.id);
+    const second = await storage.createUser('bob', 'hash', 'viewer');
+    expect(second.id).toBe(first.id);
+    expect(await storage.getTwoFactor(second.id)).toBeNull();
+  });
 });
 
 describe('MySqlStorage.loadState', () => {
@@ -100,5 +125,57 @@ describe('MySqlStorage.loadState', () => {
     const restored = await withRows(['{"maxHops":5,"implicitDeny":true}'], ['{"id":"n1"}']).loadState();
     expect(restored!.nodes).toEqual([{ id: 'n1' }]);
     expect(restored!.settings.maxHops).toBe(5);
+  });
+});
+
+describe('MySqlStorage two-factor', () => {
+  // Fake pool: records every query, answers from canned rows keyed by SQL fragment.
+  function recordingPool(rows: Record<string, unknown[]> = {}) {
+    const calls: { sql: string; params?: unknown[] }[] = [];
+    const pool = {
+      query: async (sql: string, params?: unknown[]) => {
+        calls.push({ sql, params });
+        const key = Object.keys(rows).find(k => sql.includes(k));
+        return [key ? rows[key] : []];
+      },
+      getConnection: async () => ({ release() {} }),
+    };
+    return { calls, pool };
+  }
+  const withPool = (rows?: Record<string, unknown[]>) => {
+    const storage = new MySqlStorage();
+    const fake = recordingPool(rows);
+    (storage as any).pool = fake.pool;
+    return { storage, calls: fake.calls };
+  };
+  const rec: TwoFactorRecord = { secretEnc: 'v1.a.b.c', enabled: true, recoveryHashes: ['h1'], lastStep: 7 };
+
+  test('init creates the table with a cascading foreign key, leaving users untouched', async () => {
+    const { storage, calls } = withPool();
+    await storage.init();
+    const ddl = calls.map(c => c.sql).find(sql => sql.includes('user_two_factor'))!;
+    expect(ddl).toMatch(/CREATE TABLE IF NOT EXISTS user_two_factor/);
+    expect(ddl).toMatch(/REFERENCES users\(id\) ON DELETE CASCADE/);
+    expect(calls.some(c => /ALTER TABLE users/i.test(c.sql))).toBe(false);
+  });
+
+  test('save writes JSON, null deletes, get parses string columns', async () => {
+    const { storage, calls } = withPool({ 'FROM user_two_factor WHERE': [{ data: JSON.stringify(rec) }] });
+    await storage.saveTwoFactor(3, rec);
+    expect(calls.at(-1)!.sql).toMatch(/REPLACE INTO user_two_factor/);
+    expect(calls.at(-1)!.params).toEqual([3, JSON.stringify(rec)]);
+    await storage.saveTwoFactor(3, null);
+    expect(calls.at(-1)!.sql).toMatch(/DELETE FROM user_two_factor WHERE user_id = \?/);
+    expect(await storage.getTwoFactor(3)).toEqual(rec);
+  });
+
+  test('lists only users with 2FA enabled', async () => {
+    const { storage } = withPool({
+      'SELECT user_id, data FROM user_two_factor': [
+        { user_id: 1, data: rec },
+        { user_id: 2, data: JSON.stringify({ ...rec, enabled: false }) },
+      ],
+    });
+    expect(await storage.listTwoFactorEnabled()).toEqual([1]);
   });
 });

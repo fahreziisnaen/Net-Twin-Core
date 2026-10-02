@@ -14,23 +14,32 @@ function masterKey(): Buffer {
 }
 
 // Blob format: v1.<iv b64>.<tag b64>.<ciphertext b64>
-export function encryptSecret(plaintext: string): string {
+export function encryptWithKey(plaintext: string, key: Buffer): string {
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', masterKey(), iv);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
   const ct = Buffer.concat([cipher.update(String(plaintext), 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `v1.${iv.toString('base64')}.${tag.toString('base64')}.${ct.toString('base64')}`;
 }
 
-export function decryptSecret(blob: string): string {
+export function decryptWithKey(blob: string, key: Buffer): string {
   const parts = String(blob).split('.');
   if (parts.length !== 4 || parts[0] !== 'v1') {
     throw new Error('Unsupported credential cipher version');
   }
   const [, ivB, tagB, ctB] = parts;
-  const decipher = crypto.createDecipheriv('aes-256-gcm', masterKey(), Buffer.from(ivB, 'base64'));
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivB, 'base64'));
   decipher.setAuthTag(Buffer.from(tagB, 'base64'));
   return Buffer.concat([decipher.update(Buffer.from(ctB, 'base64')), decipher.final()]).toString('utf8');
+}
+
+// Device credentials use the CRED_KEY master key.
+export function encryptSecret(plaintext: string): string {
+  return encryptWithKey(plaintext, masterKey());
+}
+
+export function decryptSecret(blob: string): string {
+  return decryptWithKey(blob, masterKey());
 }
 
 // True when a usable key is configured (used to gate the SSH feature cleanly).

@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll } from 'vitest';
-import { encryptSecret, decryptSecret } from './crypto';
+import { encryptSecret, decryptSecret, encryptWithKey, decryptWithKey } from './crypto';
 
 beforeAll(() => { process.env.CRED_KEY = 'test-master-key'; });
 
@@ -36,5 +36,16 @@ describe('credential encryption (AES-256-GCM)', () => {
 
   test('rejects unknown cipher versions', () => {
     expect(() => decryptSecret('v9.aa.bb.cc')).toThrow(/version/i);
+  });
+});
+
+
+describe('encryption with an explicit key', () => {
+  const key = Buffer.alloc(32, 1);
+  test('round-trips and fails with another key', () => {
+    const blob = encryptWithKey('JBSWY3DPEHPK3PXP', key);
+    expect(blob).not.toContain('JBSWY3DPEHPK3PXP');
+    expect(decryptWithKey(blob, key)).toBe('JBSWY3DPEHPK3PXP');
+    expect(() => decryptWithKey(blob, Buffer.alloc(32, 2))).toThrow();
   });
 });

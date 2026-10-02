@@ -18,7 +18,7 @@ Aplikasi mandiri dengan autentikasi, database, dan parser konfigurasi statis mul
 - **NAT** — Static NAT (1:1, dua arah) dan PAT (many:1 outbound) per firewall, plus playground translasi header.
 - **Compliance Auditor** — audit reachability / isolasi (mis. segmentasi PCI-DSS) yang bisa dijalankan ulang kapan pun.
 - **Change Center** — draft perubahan policy dengan **what-if before/after otomatis** dan approval (admin).
-- **RBAC + login** — tiga role: `admin`, `operator`, `viewer`. Sesi JWT httpOnly, password bcrypt, rate-limit login.
+- **RBAC + login** — tiga role: `admin`, `operator`, `viewer`. Sesi JWT httpOnly, password bcrypt, rate-limit login, **2FA opsional per user** (Google Authenticator / aplikasi TOTP, dengan kode cadangan & reset oleh admin).
 - **Persistence** — **MySQL** (via Docker) atau **file JSON** (mode dev tanpa DB), plus export/import snapshot, kembali ke data demo, dan **factory reset** (kosongkan twin; akun user, koneksi SSH, profil parser, dan pengaturan tetap).
 - **Dwibahasa (i18n)** — UI **Inggris (default)** & **Indonesia**, dapat diganti lewat pemilih **EN/ID** (tersimpan per-browser). Bahasa default aplikasi adalah Inggris.
 
@@ -62,6 +62,7 @@ Data MySQL tersimpan di volume `db_data` sehingga aman saat container di-recreat
 - `COLLECTOR_TOKEN` kini wajib diisi (≥ 16 karakter disarankan) untuk SSH Sync; collector menolak semua request tanpa token.
 - Bundle server kini ada di `dist-server/server.cjs` (dulu `dist/server.cjs`, yang ikut ter-serve publik).
 - Profil parser bawaan yang sudah tersimpan tidak diperbarui otomatis (agar editan admin tidak tertimpa). Bila Anda tidak pernah mengedit profil bawaan, klik **Parser Profiles → Reset built-in profiles** setelah upgrade untuk mendapat perbaikan parser terbaru (mis. dukungan `vrf definition` IOS-XE).
+- **2FA**: tabel baru `user_two_factor` dibuat otomatis saat aplikasi start (tabel `users` tidak diubah); tidak ada langkah manual. Sesi yang sedang login tetap berlaku setelah upgrade.
 
 ## Menjalankan tanpa Docker (mode dev)
 
@@ -90,14 +91,26 @@ Perubahan role, penghapusan user, dan penggantian password berlaku **langsung** 
 
 ## Keamanan (yang sudah & yang perlu Anda lakukan)
 
-Sudah ada: JWT httpOnly + bcrypt, guard RBAC di semua endpoint, validasi skema untuk semua data twin yang masuk (edit manual, import config/SSH, snapshot), deteksi edit bersamaan (revisi per device), rate-limit login (10 gagal / 15 menit / IP), fail-fast bila `JWT_SECRET` lemah di produksi, password admin awal acak di produksi, cookie `Secure` otomatis untuk HTTPS, proteksi "admin terakhir", header keamanan dasar, container berjalan sebagai user non-root.
+Sudah ada: JWT httpOnly + bcrypt, 2FA opsional (Google Authenticator/TOTP) dengan kode cadangan, guard RBAC di semua endpoint, validasi skema untuk semua data twin yang masuk (edit manual, import config/SSH, snapshot), deteksi edit bersamaan (revisi per device), rate-limit login (10 gagal / 15 menit / IP), fail-fast bila `JWT_SECRET` lemah di produksi, password admin awal acak di produksi, cookie `Secure` otomatis untuk HTTPS, proteksi "admin terakhir", header keamanan dasar, container berjalan sebagai user non-root.
 
 Yang perlu Anda lakukan sebelum dipakai bersama: isi `.env` (minimal `JWT_SECRET`), ganti password admin setelah login pertama, dan taruh di belakang **HTTPS** (reverse proxy + `TRUST_PROXY=1`) bila diakses lintas jaringan. Dengan Docker, batasi akses lewat `APP_PORT` (mis. `127.0.0.1:3000` di belakang proxy) atau firewall; di luar Docker lewat `HOST`. Sidecar collector dan MySQL tidak dipublikasikan keluar.
+
+### 2FA (Google Authenticator)
+
+Setiap user dapat mengaktifkan 2FA di **Settings → Keamanan Akun (2FA)**: masukkan password, pindai QR code dengan Google Authenticator (atau aplikasi TOTP lain), masukkan kode 6 digit, lalu simpan **10 kode cadangan** yang hanya ditampilkan sekali. Setelah aktif, login meminta kode 6 digit (atau kode cadangan) setelah password. Admin dapat melihat siapa yang memakai 2FA dan **me-reset 2FA** user lain yang kehilangan HP (tabel User Management).
+
+- Secret 2FA dienkripsi dengan kunci turunan `JWT_SECRET`. **Jika `JWT_SECRET` diganti**, user ber-2FA harus login memakai **kode cadangan** (atau minta admin me-reset), lalu mendaftar ulang.
+- **Pemulihan darurat** (admin satu-satunya kehilangan HP dan semua kode cadangan):
+  ```bash
+  docker compose exec -T db mysql -unettwin -p'<DB_PASSWORD>' nettwin \
+    -e "DELETE FROM user_two_factor WHERE user_id = (SELECT id FROM users WHERE username = 'admin');"
+  ```
+  Mode file (tanpa MySQL): hapus entri user tersebut dari `data/two-factor.json`, lalu restart.
 
 ## Development
 
 ```bash
-npm test        # unit test (vitest): engine simulasi, parser, auth/sesi, validasi, storage, RBAC, i18n
+npm test        # unit test (vitest): engine simulasi, parser, auth/sesi & 2FA, validasi, storage, RBAC, i18n
 npm run lint    # typecheck (tsc --noEmit) — frontend & backend
 npm run build   # frontend (vite) -> dist/, server (esbuild) -> dist-server/
 npm start       # jalankan hasil build (set NODE_ENV=production & JWT_SECRET)
